@@ -11,7 +11,6 @@ type SubmissionInput struct {
 }
 
 func SubmitAssignment(c *gin.Context) {
-	// Cek Hak Akses: Hanya Siswa (RoleID = 3) yang boleh masuk
 	roleID, _ := c.Get("role_id")
 	if uint(roleID.(float64)) != 3 {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Akses Ditolak! Anda bukan Siswa."})
@@ -30,5 +29,5 @@ func SubmitAssignment(c *gin.Context) {
 	}
 	DB.Create(&submission)
 
-	c.JSON(http.StatusOK, gin.H{"message": "Tugas berhasil dikumpulkan!"})
+	c.JSON(http.StatusOK, gin.H{"message": "Tugas berhasil dikumpulkan"})
 }

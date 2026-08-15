@@ -13,7 +13,6 @@ import (
 
 var DB *gorm.DB
 
-// === DEFINISI MODEL ===
 type Role struct {
 	ID       uint   `gorm:"primaryKey"`
 	RoleName string `gorm:"type:varchar(50);unique;not null"`
@@ -62,7 +61,6 @@ type Submission struct {
 	Feedback     string `gorm:"type:text"`
 }
 
-// === FUNGSI SEEDER (Pengisi Data Awal) ===
 func seedRoles() {
 	roles := []Role{
 		{ID: 1, RoleName: "Admin"},
@@ -72,57 +70,46 @@ func seedRoles() {
 	for _, role := range roles {
 		DB.FirstOrCreate(&role, Role{ID: role.ID})
 	}
-	fmt.Println("Data Role (Admin, Guru, Siswa) berhasil disuntikkan!")
+	fmt.Println("Data (Admin, Guru, Siswa) sukses disuntik")
 }
 
-// === FUNGSI UTAMA ===
 func main() {
 	var err error
 	DB, err = gorm.Open(sqlite.Open("lms_data.db"), &gorm.Config{})
 	if err != nil {
-		log.Fatal("Gagal terhubung ke database:", err)
+		log.Fatal("Gagal connect ke db:", err)
 	}
 
 	DB.AutoMigrate(&Role{}, &User{}, &Class{}, &Subject{}, &Material{}, &Assignment{}, &Submission{})
 	
-	// Jalankan Seeder
 	seedRoles()
 
 	r := gin.Default()
 
-	// === RUTE PUBLIK (TIDAK PERLU LOGIN) ===
 	r.GET("/api/status", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "sukses", "pesan": "Server Backend Hidup!"})
+		c.JSON(http.StatusOK, gin.H{"status": "sukses", "pesan": "Server Backend idup!"})
 	})
 	r.POST("/api/register", Register)
 	r.POST("/api/login", Login)
 
-	// === RUTE YANG DILINDUNGI (HARUS LOGIN) ===
 	protected := r.Group("/api")
 	protected.Use(AuthMiddleware()) 
 	{
-		// Rute Tes Dashboard
 		protected.GET("/dashboard", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
-				"message": "Selamat datang di Dashboard Rahasia LMS!",
-				"data": "Hanya user yang sudah login yang bisa melihat teks ini.",
+				"message": "dashboard lms abi",
+				"data": "testing text (login only can read this code).",
 			})
 		})
-
-		// 1. Rute Khusus Admin
 		protected.POST("/admin/classes", CreateClass)
 		protected.GET("/admin/classes", GetClasses)
 
-		// 2. Rute Khusus Guru (dan Siswa untuk GET)
 		protected.POST("/teacher/materials", CreateMaterial)
 		protected.GET("/materials", GetMaterials)
 
-		// 3. Rute Khusus Siswa
 		protected.POST("/student/submissions", SubmitAssignment)
 	}
 
-	fmt.Println("======================================")
-	fmt.Println(" Server nyala : http://localhost:8080")
-	fmt.Println("======================================")
+	fmt.Println(" Server on at : http://localhost:8080")
 	r.Run(":8080")
 }

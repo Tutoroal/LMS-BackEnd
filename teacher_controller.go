@@ -12,10 +12,9 @@ type MaterialInput struct {
 }
 
 func CreateMaterial(c *gin.Context) {
-	// Cek Hak Akses: Hanya Guru (RoleID = 2) yang boleh masuk
 	roleID, _ := c.Get("role_id")
 	if uint(roleID.(float64)) != 2 {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Akses Ditolak! Anda bukan Guru."})
+		c.JSON(http.StatusForbidden, gin.H{"error": "Akses Ditolak Anda bukan Guru."})
 		return
 	}
 
@@ -32,13 +31,13 @@ func CreateMaterial(c *gin.Context) {
 	}
 	DB.Create(&material)
 
-	c.JSON(http.StatusOK, gin.H{"message": "Materi baru berhasil diunggah!", "data": material})
+	c.JSON(http.StatusOK, gin.H{"message": "Materi baru berhasil diunggah", "data": material})
 }
 
 func GetMaterials(c *gin.Context) {
 	roleID, _ := c.Get("role_id")
 	if uint(roleID.(float64)) != 2 && uint(roleID.(float64)) != 3 {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Akses Ditolak!"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "Akses Ditolak"})
 		return
 	}
 
