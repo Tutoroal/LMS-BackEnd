@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -21,8 +22,9 @@ type Role struct {
 
 type User struct {
 	ID           string `gorm:"primaryKey;type:varchar(36)"`
-	NISN_NIP     string `gorm:"type:varchar(50)"` 
-	NIS          string `gorm:"type:varchar(50)"` 
+	// Penambahan pengunci nama kolom (column:nisn_nip) agar tidak error saat login
+	NISN_NIP     string `gorm:"column:nisn_nip;type:varchar(50)"` 
+	NIS          string `gorm:"column:nis;type:varchar(50)"` 
 	Name         string `gorm:"type:varchar(100);not null"`
 	Email        string `gorm:"type:varchar(100);unique;not null"`
 	PasswordHash string `gorm:"type:varchar(255);not null"`
@@ -31,10 +33,10 @@ type User struct {
 	JenisKelamin string `gorm:"type:varchar(20)"`
 	Specialty    string `gorm:"type:varchar(100)"` 
 	
-	RoleID       uint
+	RoleID       uint   `gorm:"column:role_id"`
 	Role         Role   `gorm:"foreignKey:RoleID"`
 	
-	ClassID      *uint  
+	ClassID      *uint  `gorm:"column:class_id"`
 	Class        *Class `gorm:"foreignKey:ClassID"`
 
 	TaughtClasses []Class `gorm:"many2many:teacher_classes;"`
@@ -106,13 +108,37 @@ func seedRoles() {
 	log.Println("✅ Data Role berhasil disuntikkan!")
 }
 
+func seedUsers() {
+	hash, _ := bcrypt.GenerateFromPassword([]byte("121212"), bcrypt.DefaultCost)
+	passString := string(hash)
+
+	var admin User
+	if DB.Where("email = ?", "admin@cn.edu").First(&admin).Error != nil {
+		DB.Create(&User{Name: "Administrator Pusat", Email: "admin@cn.edu", PasswordHash: passString, RoleID: 1})
+	}
+
+	var guru User
+	if DB.Where("email = ?", "guru@cn.edu").First(&guru).Error != nil {
+		DB.Create(&User{Name: "Budi Santoso, S.Kom", Email: "guru@cn.edu", NISN_NIP: "198001012005011001", PasswordHash: passString, RoleID: 2, Specialty: "Guru Kejuruan PPLG"})
+	}
+
+	var siswa User
+	if DB.Where("email = ?", "siswa@cn.edu").First(&siswa).Error != nil {
+		DB.Create(&User{Name: "Andi Pratama", Email: "siswa@cn.edu", NISN_NIP: "0081234567", NIS: "10121", PasswordHash: passString, RoleID: 3})
+	}
+	
+	log.Println("✅ Data Akun Bawaan (Admin, Guru, Siswa) berhasil disuntikkan!")
+}
+
 func main() {
 	var err error
 	DB, err = gorm.Open(sqlite.Open("lms_data.db"), &gorm.Config{})
 	if err != nil { log.Fatal(err) }
 
 	DB.AutoMigrate(&Role{}, &User{}, &Class{}, &Subject{}, &Schedule{}, &Material{}, &Assignment{}, &Submission{})
+	
 	seedRoles()
+	seedUsers() 
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -142,6 +168,6 @@ func main() {
 		protected.POST("/admin/import", ImportDataExcel)
 	}
 
-	log.Println("server on di: http://localhost:8080")
+	log.Println(" Server LMS Backend berjalan di: http://localhost:8080")
 	r.Run(":8080")
 }
