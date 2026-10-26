@@ -94,7 +94,7 @@ func TestAdminValidationAndHomeroomProtection(t *testing.T) {
 	expectStatus(t, requestCBT(r, admin, "POST", "/api/admin/classes", `{"class_name":"X DKV","major":"DKV","homeroom_teacher_id":"teacher"}`), 200)
 	expectStatus(t, requestCBT(r, admin, "POST", "/api/admin/classes", `{"class_name":"XI DKV","major":"DKV","homeroom_teacher_id":"teacher"}`), 409)
 	expectStatus(t, requestCBT(r, admin, "DELETE", "/api/admin/users/teacher", ""), 409)
-	expectStatus(t, requestCBT(r, admin, "DELETE", "/api/admin/users/admin", ""), 409)
+	expectStatus(t, requestCBT(r, admin, "DELETE", "/api/admin/users/admin", ""), 403)
 	expectStatus(t, requestCBT(r, admin, "POST", "/api/admin/users", `{"name":"Bad","email":"bad@test.local","password":"123","role_id":3}`), 400)
 	expectStatus(t, requestCBT(r, admin, "POST", "/api/admin/users", `{"name":"Bad","email":"bad@test.local","password":"12345678","role_id":99}`), 400)
 	expectStatus(t, requestCBT(r, admin, "POST", "/api/admin/users", `{"name":"Bad","email":"s@test.local","password":"12345678","role_id":3}`), 409)
@@ -258,15 +258,17 @@ func TestImportRollbackAndTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer workbook.Close()
-	if len(workbook.GetSheetList()) != 2 {
+	if len(workbook.GetSheetList()) != 3 {
 		t.Fatal("template sheets missing")
 	}
 }
 func TestPortalSettingsGradesAndReport(t *testing.T) {
 	r := setupCBT(t)
 	admin := tokenFor(t, "admin", 1)
+	superadmin := tokenFor(t, "superadmin", 6)
 	student := tokenFor(t, "student", 3)
-	expectStatus(t, requestCBT(r, admin, "PUT", "/api/admin/settings", `{"school_name":"SMK Uji","academic_year":"2026/2027"}`), 200)
+	expectStatus(t, requestCBT(r, admin, "PUT", "/api/admin/settings", `{"school_name":"Tidak boleh","academic_year":"2026/2027"}`), 403)
+	expectStatus(t, requestCBT(r, superadmin, "PUT", "/api/admin/settings", `{"school_name":"SMK Uji","academic_year":"2026/2027"}`), 200)
 	settings := requestCBT(r, student, "GET", "/api/settings", "")
 	expectStatus(t, settings, 200)
 	if !strings.Contains(settings.Body.String(), "SMK Uji") {
@@ -290,10 +292,20 @@ func TestPortalSettingsGradesAndReport(t *testing.T) {
 	}
 	defer workbook.Close()
 	rows, err := workbook.GetRows("Nilai Tugas")
-	if err != nil || len(rows) != 2 {
+	if err != nil || len(rows) != 3 {
 		t.Fatal("report missing grades", err)
 	}
-	if rows[1][5] != "0" || rows[1][7] != "Dinilai" {
+	var graded []string
+	var missing []string
+	for _, row := range rows[1:] {
+		if row[7] == "Dinilai" {
+			graded = row
+		}
+		if row[7] == "Belum mengumpulkan" {
+			missing = row
+		}
+	}
+	if len(graded) == 0 || graded[5] != "0" || len(missing) == 0 || missing[5] != "" {
 		t.Fatal("zero score report is incorrect", rows)
 	}
 }

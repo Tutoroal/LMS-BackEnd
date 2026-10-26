@@ -54,7 +54,7 @@ func Login(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "Layanan login belum tersedia."})
 		return
 	}
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)) != nil || user.RoleID < 1 || user.RoleID > 3 {
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)) != nil || user.RoleID < 1 || user.RoleID > 6 {
 		if guard != nil {
 			guard.record(key, false)
 		}
@@ -115,7 +115,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		role, ok := claims["role_id"].(float64)
-		if !ok || role != float64(user.RoleID) || user.RoleID < 1 || user.RoleID > 3 {
+		if !ok || role != float64(user.RoleID) || user.RoleID < 1 || user.RoleID > 6 {
 			c.AbortWithStatusJSON(401, gin.H{"error": "Hak akses berubah. Silakan masuk kembali."})
 			return
 		}
@@ -138,8 +138,23 @@ func AuthMiddleware() gin.HandlerFunc {
 		expiry, _ := claims.GetExpirationTime()
 		c.Set("session_expiry", expiry.Time)
 		path := c.Request.URL.Path
-		if (strings.HasPrefix(path, "/api/admin/") && user.RoleID != 1) ||
-			(strings.HasPrefix(path, "/api/teacher/") && user.RoleID != 1 && user.RoleID != 2) ||
+		observer := user.RoleID == 4 || user.RoleID == 5
+		if observer && c.Request.Method != "GET" && path != "/api/auth/logout" && path != "/api/auth/password" {
+			c.AbortWithStatusJSON(403, gin.H{"error": "Akun pemantau hanya memiliki akses baca dan export."})
+			return
+		}
+		adminPath := strings.HasPrefix(path, "/api/admin/")
+		accountPath := strings.HasPrefix(path, "/api/admin/users")
+		settingsPath := path == "/api/admin/settings"
+		adminAllowed := user.RoleID == 1
+		if accountPath {
+			adminAllowed = user.RoleID == 1 || user.RoleID == 6
+		}
+		if settingsPath {
+			adminAllowed = user.RoleID == 6
+		}
+		if (adminPath && !adminAllowed) ||
+			(strings.HasPrefix(path, "/api/teacher/") && user.RoleID != 1 && user.RoleID != 2 && !observer) ||
 			(strings.HasPrefix(path, "/api/student/") && user.RoleID != 3) {
 			c.AbortWithStatusJSON(403, gin.H{"error": "Anda tidak memiliki akses ke halaman ini."})
 			return

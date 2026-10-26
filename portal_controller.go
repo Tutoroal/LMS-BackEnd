@@ -23,7 +23,7 @@ func GetSchoolSettings(c *gin.Context) {
 	c.JSON(200, gin.H{"data": settings, "departments": departments})
 }
 func UpdateSchoolSettings(c *gin.Context) {
-	if !isAdmin(c) {
+	if !isSuperAdmin(c) {
 		return
 	}
 	var input struct {
@@ -144,13 +144,14 @@ func GetStudentGrades(c *gin.Context) {
 		return
 	}
 	exams := []struct {
-		ID          uint
-		Title       string
-		SubjectName string
-		Type        string
-		Score       float64
+		ID             uint
+		Title          string
+		SubjectName    string
+		Type           string
+		Score          float64
+		PendingGrading bool
 	}{}
-	err = DB.Model(&ExamResult{}).Select("exam_results.id, exams.title, subjects.subject_name, exams.type, exam_results.score").Joins("JOIN exams ON exams.id = exam_results.exam_id").Joins("JOIN subjects ON subjects.id = exams.subject_id").Where("exam_results.student_id = ?", userID).Order("exam_results.id DESC").Scan(&exams).Error
+	err = DB.Model(&ExamResult{}).Select("exam_results.id, exams.title, subjects.subject_name, exams.type, exam_results.score, exam_results.pending_grading").Joins("JOIN exams ON exams.id = exam_results.exam_id").Joins("JOIN subjects ON subjects.id = exams.subject_id").Where("exam_results.student_id = ?", userID).Order("exam_results.id DESC").Scan(&exams).Error
 	if err != nil {
 		sendExamError(c, err)
 		return
@@ -195,5 +196,10 @@ func GetTeacherExamResults(c *gin.Context) {
 		sendExamError(c, err)
 		return
 	}
-	c.JSON(200, gin.H{"exam": exam, "data": rows, "student_count": participants})
+	var questions []Question
+	if err := DB.Where("exam_id=?", id).Find(&questions).Error; err != nil {
+		sendExamError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"exam": exam, "data": rows, "student_count": participants, "import_warning": importWarning(questions)})
 }

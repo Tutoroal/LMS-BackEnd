@@ -12,10 +12,17 @@ import (
 type ClassInput struct {
 	ClassName         string  `json:"class_name" binding:"required"`
 	Major             string  `json:"major"`
+	Program           string  `json:"program"`
 	HomeroomTeacherID *string `json:"homeroom_teacher_id"`
 }
 
 func normalizeClass(input *ClassInput) error {
+	if input.Program == "" {
+		input.Program = "reguler"
+	}
+	if input.Program != "reguler" && input.Program != "plus" {
+		return failExam(400, "Program kelas harus reguler atau plus.")
+	}
 	input.ClassName = strings.ToUpper(sanitize(input.ClassName))
 	input.Major = strings.ToUpper(strings.TrimSpace(input.Major))
 	if !validText(input.ClassName, 50) {
@@ -97,10 +104,10 @@ func saveClass(c *gin.Context, update bool) {
 			return err
 		}
 		if !update {
-			class = Class{ClassName: input.ClassName, Major: input.Major, HomeroomTeacherID: input.HomeroomTeacherID}
+			class = Class{Program: input.Program, ClassName: input.ClassName, Major: input.Major, HomeroomTeacherID: input.HomeroomTeacherID}
 			return tx.Create(&class).Error
 		}
-		return tx.Model(&class).Updates(map[string]interface{}{"class_name": input.ClassName, "major": input.Major, "homeroom_teacher_id": input.HomeroomTeacherID}).Error
+		return tx.Model(&class).Updates(map[string]interface{}{"program": input.Program, "class_name": input.ClassName, "major": input.Major, "homeroom_teacher_id": input.HomeroomTeacherID}).Error
 	})
 	if err != nil {
 		sendExamError(c, err)
@@ -189,7 +196,7 @@ type UserInput struct {
 	Name         string `json:"name" binding:"required"`
 	Email        string `json:"email" binding:"required"`
 	Password     string `json:"password"`
-	RoleID       uint   `json:"role_id" binding:"required,oneof=1 2 3"`
+	RoleID       uint   `json:"role_id" binding:"required,oneof=1 2 3 4 5"`
 	NISN_NIP     string `json:"nisn_nip"`
 	NIS          string `json:"nis"`
 	TempatLahir  string `json:"tempat_lahir"`
@@ -211,7 +218,7 @@ func normalizeUser(input *UserInput) error {
 	if !validText(input.Name, 100) || len(input.NISN_NIP) > 50 || len(input.NIS) > 50 || len(input.Specialty) > 100 || len(input.TempatLahir) > 100 {
 		return failExam(400, "Nama atau identitas terlalu panjang atau kosong.")
 	}
-	if input.RoleID < 1 || input.RoleID > 3 {
+	if input.RoleID < 1 || input.RoleID > 6 {
 		return failExam(400, "Peran akun tidak valid.")
 	}
 	if input.RoleID == 2 && input.NISN_NIP == "" {
@@ -261,11 +268,17 @@ func validateUserRelations(tx *gorm.DB, input UserInput, exceptID string) error 
 	return nil
 }
 func GetUsers(c *gin.Context) {
-	if !isAdmin(c) {
+	if !isAccountManager(c) {
 		return
 	}
 	users := []User{}
-	if err := DB.Preload("Class").Preload("Role").Order("created_at DESC").Find(&users).Error; err != nil {
+	query := DB.Preload("Class").Preload("Role").Order("created_at DESC")
+	if c.GetFloat64("role_id") == 6 {
+		query = query.Where("role_id = ?", 1)
+	} else {
+		query = query.Where("role_id BETWEEN ? AND ?", 2, 5)
+	}
+	if err := query.Find(&users).Error; err != nil {
 		sendExamError(c, err)
 		return
 	}
@@ -274,12 +287,16 @@ func GetUsers(c *gin.Context) {
 func CreateUser(c *gin.Context) { saveUser(c, false) }
 func UpdateUser(c *gin.Context) { saveUser(c, true) }
 func saveUser(c *gin.Context, update bool) {
-	if !isAdmin(c) {
+	if !isAccountManager(c) {
 		return
 	}
 	var input UserInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(400, gin.H{"error": "Nama, email, dan peran yang valid wajib diisi."})
+		return
+	}
+	if !mayManageRole(c, input.RoleID) {
+		c.JSON(403, gin.H{"error": "Anda tidak boleh mengelola akun dengan peran tersebut."})
 		return
 	}
 	if err := normalizeUser(&input); err != nil {
@@ -338,7 +355,7 @@ func saveUser(c *gin.Context, update bool) {
 	c.JSON(200, gin.H{"message": "Data pengguna tersimpan."})
 }
 func DeleteUser(c *gin.Context) {
-	if !isAdmin(c) {
+	if !isAccountManager(c) {
 		return
 	}
 	id := c.Param("id")
@@ -346,6 +363,9 @@ func DeleteUser(c *gin.Context) {
 		var user User
 		if err := tx.First(&user, "id = ?", id).Error; err != nil {
 			return err
+		}
+		if !mayManageRole(c, user.RoleID) {
+			return failExam(403, "Anda tidak boleh menghapus akun dengan peran tersebut.")
 		}
 		if id == c.GetString("user_id") {
 			return failExam(409, "Anda tidak dapat menghapus akun yang sedang digunakan.")
@@ -394,7 +414,7 @@ type AssignClassInput struct {
 }
 
 func AssignStudentToClass(c *gin.Context) {
-	if !isAdmin(c) {
+	if !isAccountManager(c) {
 		return
 	}
 	var input AssignClassInput
@@ -451,7 +471,7 @@ func validateClassTransfer(tx *gorm.DB, student User, target *uint) error {
 	return nil
 }
 func AssignStudentsToClass(c *gin.Context) {
-	if !isAdmin(c) {
+	if !isAccountManager(c) {
 		return
 	}
 	var input struct {

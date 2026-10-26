@@ -33,7 +33,7 @@ func setupCBT(t *testing.T) *gin.Engine {
 	}
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { sqlDB.Close() })
-	if err = DB.AutoMigrate(&Role{}, &User{}, &Class{}, &Subject{}, &Schedule{}, &Material{}, &Assignment{}, &Submission{}, &Exam{}, &Question{}, &ExamResult{}, &ExamAttempt{}, &SchoolSettings{}); err != nil {
+	if err = DB.AutoMigrate(&Role{}, &User{}, &Class{}, &Subject{}, &Schedule{}, &Material{}, &Assignment{}, &Submission{}, &Exam{}, &Question{}, &ExamResult{}, &ExamAttempt{}, &SchoolSettings{}, &MediaAsset{}, &TeachingAllocation{}); err != nil {
 		t.Fatal(err)
 	}
 	seedRoles()
@@ -47,6 +47,7 @@ func setupCBT(t *testing.T) *gin.Engine {
 		{ID: "teacher", Name: "Guru", Email: "t@test.local", RoleID: 2},
 		{ID: "other-teacher", Name: "Guru lain", Email: "ot@test.local", RoleID: 2},
 		{ID: "admin", Name: "Admin", Email: "a@test.local", RoleID: 1},
+		{ID: "superadmin", Name: "Super Admin", Email: "root@test.local", RoleID: 6},
 	} {
 		mustCreate(t, &u)
 	}

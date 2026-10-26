@@ -16,19 +16,24 @@ import (
 
 // Questions and their keys are snapshotted once, so later edits cannot change a score.
 type ExamAttempt struct {
-	ID            uint   `gorm:"primaryKey"`
-	ExamID        uint   `gorm:"uniqueIndex:idx_attempt_student_exam;not null"`
-	Exam          Exam   `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
-	StudentID     string `gorm:"uniqueIndex:idx_attempt_student_exam;not null"`
-	Student       User   `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
-	StartedAt     time.Time
-	ExpiresAt     time.Time `gorm:"index"`
-	SubmittedAt   *time.Time
-	QuestionsJSON string `json:"-"`
-	AnswersJSON   string `json:"-"`
+	EssayGradesJSON string `gorm:"default:{}" json:"-"`
+	ID              uint   `gorm:"primaryKey"`
+	ExamID          uint   `gorm:"uniqueIndex:idx_attempt_student_exam;not null"`
+	Exam            Exam   `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
+	StudentID       string `gorm:"uniqueIndex:idx_attempt_student_exam;not null"`
+	Student         User   `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
+	StartedAt       time.Time
+	ExpiresAt       time.Time `gorm:"index"`
+	SubmittedAt     *time.Time
+	QuestionsJSON   string `json:"-"`
+	AnswersJSON     string `json:"-"`
 }
 
 type studentQuestion struct {
+	Kind         string
+	Points       float64
+	ImageAssetID *uint
+	OptionE      string
 	ID           uint
 	QuestionText string
 	OptionA      string
@@ -123,13 +128,18 @@ func finishAttempt(tx *gorm.DB, attempt *ExamAttempt, now time.Time) (ExamResult
 	if err != nil {
 		return result, err
 	}
-	correct := 0
+	score, total := 0.0, 0.0
+	pending := false
 	for _, q := range questions {
-		if answers[q.ID] == q.CorrectAnswer {
-			correct++
+		points := questionPoints(q)
+		total += points
+		if q.Kind == "essay" {
+			pending = true
+		} else if answers[q.ID] == q.CorrectAnswer {
+			score += points
 		}
 	}
-	result = ExamResult{ExamID: attempt.ExamID, StudentID: attempt.StudentID, Score: float64(correct) * 100 / float64(len(questions))}
+	result = ExamResult{ExamID: attempt.ExamID, StudentID: attempt.StudentID, Score: score * 100 / total, PendingGrading: pending}
 	if err = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&result).Error; err != nil {
 		return result, err
 	}
@@ -223,7 +233,7 @@ func StartStudentExam(c *gin.Context) {
 		}
 		safeQuestions := make([]studentQuestion, 0, len(questions))
 		for _, q := range questions {
-			safeQuestions = append(safeQuestions, studentQuestion{q.ID, q.QuestionText, q.OptionA, q.OptionB, q.OptionC, q.OptionD})
+			safeQuestions = append(safeQuestions, studentQuestion{ID: q.ID, QuestionText: q.QuestionText, OptionA: q.OptionA, OptionB: q.OptionB, OptionC: q.OptionC, OptionD: q.OptionD, OptionE: q.OptionE, Kind: q.Kind, Points: questionPoints(q), ImageAssetID: q.ImageAssetID})
 		}
 		response = gin.H{"exam": exam, "questions": safeQuestions, "answers": answers, "started_at": attempt.StartedAt, "expires_at": attempt.ExpiresAt, "server_time": time.Now().UTC()}
 		return nil
@@ -246,7 +256,7 @@ func writeStudentAnswers(c *gin.Context, submit bool) {
 	if !isSiswa(c) {
 		return
 	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024*1024)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4*1024*1024)
 	var input examAnswersInput
 	if err := c.ShouldBindJSON(&input); err != nil || input.Answers == nil {
 		c.JSON(400, gin.H{"error": "Format jawaban tidak valid."})
@@ -280,12 +290,13 @@ func writeStudentAnswers(c *gin.Context, submit bool) {
 			if err != nil {
 				return err
 			}
-			validIDs := map[uint]bool{}
+			validIDs := map[uint]Question{}
 			for _, q := range questions {
-				validIDs[q.ID] = true
+				validIDs[q.ID] = q
 			}
 			for id, answer := range input.Answers {
-				if !validIDs[id] || (answer != "A" && answer != "B" && answer != "C" && answer != "D") {
+				q, exists := validIDs[id]
+				if !exists || len(answer) > 10000 || (q.Kind != "essay" && answer != "" && answer != "A" && answer != "B" && answer != "C" && answer != "D" && (answer != "E" || q.OptionE == "")) {
 					return failExam(400, "ID soal atau pilihan jawaban tidak valid.")
 				}
 				answers[id] = answer

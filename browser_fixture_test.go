@@ -42,7 +42,10 @@ func TestSeedBrowserFixture(t *testing.T) {
 	mustCreate(t, &Class{ID: 2, ClassName: "X TJKT Uji", Major: "TJKT"})
 	class1, class2 := uint(1), uint(2)
 	for _, user := range []User{
+		{ID: "e2e-kepsek", Name: "Kepsek Uji", Email: "kepsek@e2e.invalid", RoleID: 4, PasswordHash: string(hash)},
+		{ID: "e2e-waka", Name: "Waka Uji", Email: "waka@e2e.invalid", RoleID: 5, PasswordHash: string(hash)},
 		{ID: "e2e-admin", Name: "Admin Uji", Email: "admin@e2e.invalid", RoleID: 1, PasswordHash: string(hash)},
+		{ID: "e2e-superadmin", Name: "Super Admin Uji", Email: "superadmin@e2e.invalid", RoleID: 6, PasswordHash: string(hash)},
 		{ID: "e2e-teacher", Name: "Guru Uji", Email: "guru@e2e.invalid", NISN_NIP: "000101", RoleID: 2, PasswordHash: string(hash)},
 		{ID: "e2e-student", Name: "Siswa Uji", Email: "siswa@e2e.invalid", NIS: "000201", NISN_NIP: "0002001", RoleID: 3, ClassID: &class1, PasswordHash: string(hash)},
 		{ID: "e2e-other", Name: "Siswa TJKT", Email: "other@e2e.invalid", NIS: "000202", RoleID: 3, ClassID: &class2, PasswordHash: string(hash)},

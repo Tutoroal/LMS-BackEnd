@@ -11,14 +11,16 @@ type MaterialInput struct {
 	SubjectID  uint   `json:"subject_id" binding:"required"`
 	ClassID    uint   `json:"class_id" binding:"required"`
 	Title      string `json:"title" binding:"required"`
-	ContentURL string `json:"content_url" binding:"required"`
+	ContentURL string `json:"content_url"`
+	AssetID    *uint  `json:"asset_id"`
 }
 type AssignmentInput struct {
-	SubjectID uint   `json:"subject_id" binding:"required"`
-	ClassID   uint   `json:"class_id" binding:"required"`
-	Title     string `json:"title" binding:"required"`
-	Deadline  string `json:"deadline" binding:"required"`
-	MaxScore  int    `json:"max_score"`
+	AnswerFormats string `json:"answer_formats"`
+	SubjectID     uint   `json:"subject_id" binding:"required"`
+	ClassID       uint   `json:"class_id" binding:"required"`
+	Title         string `json:"title" binding:"required"`
+	Deadline      string `json:"deadline" binding:"required"`
+	MaxScore      int    `json:"max_score"`
 }
 type MaterialRow struct {
 	Material
@@ -37,7 +39,23 @@ func GetTeacherClasses(c *gin.Context) {
 		return
 	}
 	var classes []Class
-	if err := DB.Preload("HomeroomTeacher", func(tx *gorm.DB) *gorm.DB { return tx.Select("id", "name", "email", "role_id") }).Order("class_name").Find(&classes).Error; err != nil {
+	query := DB
+	if restrictTeacher(c) {
+		var count int64
+		if err := DB.Model(&TeachingAllocation{}).Joins("JOIN subjects ON subjects.id = teaching_allocations.subject_id").Where("subjects.teacher_id = ?", c.GetString("user_id")).Count(&count).Error; err != nil {
+			sendExamError(c, err)
+			return
+		}
+		var configured int64
+		if err := DB.Model(&Subject{}).Where("teacher_id=? AND allocation_configured=true", c.GetString("user_id")).Count(&configured).Error; err != nil {
+			sendExamError(c, err)
+			return
+		}
+		if count > 0 || configured > 0 {
+			query = query.Where("id IN (SELECT class_id FROM teaching_allocations JOIN subjects ON subjects.id = teaching_allocations.subject_id WHERE subjects.teacher_id = ?)", c.GetString("user_id"))
+		}
+	}
+	if err := query.Preload("HomeroomTeacher", func(tx *gorm.DB) *gorm.DB { return tx.Select("id", "name", "email", "role_id") }).Order("class_name").Find(&classes).Error; err != nil {
 		sendExamError(c, err)
 		return
 	}
@@ -52,10 +70,14 @@ func GetTeacherSubjects(c *gin.Context) {
 	}
 	subjects := []Subject{}
 	query := DB.Order("subject_name")
-	if c.GetFloat64("role_id") != 1 {
+	if restrictTeacher(c) {
 		query = query.Where("teacher_id = ?", c.GetString("user_id"))
 	}
 	if err := query.Find(&subjects).Error; err != nil {
+		sendExamError(c, err)
+		return
+	}
+	if err := attachSubjectClasses(subjects); err != nil {
 		sendExamError(c, err)
 		return
 	}
@@ -68,15 +90,25 @@ func saveMaterial(c *gin.Context, update bool) {
 		return
 	}
 	var input MaterialInput
-	if err := c.ShouldBindJSON(&input); err != nil || !validText(input.Title, 255) || !validURL(input.ContentURL) {
-		c.JSON(400, gin.H{"error": "Judul dan URL materi http/https wajib diisi."})
+	if err := c.ShouldBindJSON(&input); err != nil || !validText(input.Title, 255) || ((input.AssetID == nil && !validURL(input.ContentURL)) || (input.AssetID != nil && (input.ContentURL != "" || *input.AssetID == 0))) {
+		c.JSON(400, gin.H{"error": "Isi judul dan pilih satu sumber materi: berkas atau URL http/https."})
 		return
 	}
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		if err := validateTarget(tx, c, input.SubjectID, input.ClassID); err != nil {
 			return err
 		}
-		material := Material{SubjectID: input.SubjectID, ClassID: input.ClassID, Title: strings.TrimSpace(input.Title), ContentURL: strings.TrimSpace(input.ContentURL), UploadedBy: c.GetString("user_id")}
+		if input.AssetID != nil {
+			var asset MediaAsset
+			query := tx.Where("id=? AND ready=true AND purpose='material' AND subject_id=? AND class_id=?", *input.AssetID, input.SubjectID, input.ClassID)
+			if restrictTeacher(c) {
+				query = query.Where("owner_id=?", c.GetString("user_id"))
+			}
+			if err := query.First(&asset).Error; err != nil {
+				return failExam(400, "Berkas materi tidak sesuai pengampu atau kelas. Unggah kembali untuk target ini.")
+			}
+		}
+		material := Material{AssetID: input.AssetID, SubjectID: input.SubjectID, ClassID: input.ClassID, Title: strings.TrimSpace(input.Title), ContentURL: strings.TrimSpace(input.ContentURL), UploadedBy: c.GetString("user_id")}
 		if !update {
 			return tx.Create(&material).Error
 		}
@@ -88,7 +120,7 @@ func saveMaterial(c *gin.Context, update bool) {
 		if err != nil {
 			return err
 		}
-		return tx.Model(&current).Updates(map[string]interface{}{"subject_id": input.SubjectID, "class_id": input.ClassID, "title": material.Title, "content_url": material.ContentURL}).Error
+		return tx.Model(&current).Updates(map[string]interface{}{"subject_id": input.SubjectID, "class_id": input.ClassID, "title": material.Title, "content_url": material.ContentURL, "asset_id": material.AssetID}).Error
 	})
 	if err != nil {
 		sendExamError(c, err)
@@ -102,7 +134,7 @@ func GetMaterials(c *gin.Context) {
 	}
 	rows := []MaterialRow{}
 	query := DB.Model(&Material{}).Select("materials.*, classes.class_name, subjects.subject_name").Joins("JOIN classes ON classes.id = materials.class_id").Joins("JOIN subjects ON subjects.id = materials.subject_id")
-	if c.GetFloat64("role_id") != 1 {
+	if restrictTeacher(c) {
 		query = query.Where("subjects.teacher_id = ?", c.GetString("user_id"))
 	}
 	if err := query.Order("materials.id DESC").Scan(&rows).Error; err != nil {
@@ -144,6 +176,13 @@ func saveAssignment(c *gin.Context, update bool) {
 		c.JSON(400, gin.H{"error": "Lengkapi judul, kelas, mapel, tenggat, dan skor maksimal 1?1000."})
 		return
 	}
+	if input.AnswerFormats == "" {
+		input.AnswerFormats = "link"
+	}
+	if !validAnswerFormats(input.AnswerFormats) {
+		c.JSON(400, gin.H{"error": "Format jawaban tidak valid."})
+		return
+	}
 	deadline, err := deadlineFromInput(input.Deadline)
 	if err != nil {
 		sendExamError(c, err)
@@ -156,7 +195,7 @@ func saveAssignment(c *gin.Context, update bool) {
 		if err := validateTarget(tx, c, input.SubjectID, input.ClassID); err != nil {
 			return err
 		}
-		assignment := Assignment{SubjectID: input.SubjectID, ClassID: input.ClassID, Title: strings.TrimSpace(input.Title), Deadline: deadline, MaxScore: input.MaxScore}
+		assignment := Assignment{AnswerFormats: input.AnswerFormats, SubjectID: input.SubjectID, ClassID: input.ClassID, Title: strings.TrimSpace(input.Title), Deadline: deadline, MaxScore: input.MaxScore}
 		if !update {
 			return tx.Create(&assignment).Error
 		}
@@ -172,10 +211,10 @@ func saveAssignment(c *gin.Context, update bool) {
 		if err := tx.Model(&Submission{}).Where("assignment_id = ?", id).Count(&count).Error; err != nil {
 			return err
 		}
-		if count > 0 && (current.ClassID != input.ClassID || current.SubjectID != input.SubjectID || current.MaxScore != input.MaxScore) {
+		if count > 0 && (current.ClassID != input.ClassID || current.SubjectID != input.SubjectID || current.MaxScore != input.MaxScore || current.AnswerFormats != input.AnswerFormats) {
 			return failExam(409, "Kelas, mapel, dan skor maksimal terkunci setelah ada pengumpulan.")
 		}
-		return tx.Model(&current).Updates(map[string]interface{}{"subject_id": input.SubjectID, "class_id": input.ClassID, "title": assignment.Title, "deadline": deadline, "max_score": input.MaxScore}).Error
+		return tx.Model(&current).Updates(map[string]interface{}{"subject_id": input.SubjectID, "class_id": input.ClassID, "title": assignment.Title, "deadline": deadline, "max_score": input.MaxScore, "answer_formats": input.AnswerFormats}).Error
 	})
 	if err != nil {
 		sendExamError(c, err)
@@ -189,7 +228,7 @@ func GetAssignments(c *gin.Context) {
 	}
 	rows := []AssignmentRow{}
 	query := DB.Model(&Assignment{}).Select("assignments.*, classes.class_name, subjects.subject_name, (SELECT COUNT(*) FROM submissions WHERE submissions.assignment_id = assignments.id) AS submission_count").Joins("JOIN classes ON classes.id = assignments.class_id").Joins("JOIN subjects ON subjects.id = assignments.subject_id")
-	if c.GetFloat64("role_id") != 1 {
+	if restrictTeacher(c) {
 		query = query.Where("subjects.teacher_id = ?", c.GetString("user_id"))
 	}
 	if err := query.Order("assignments.id DESC").Scan(&rows).Error; err != nil {
@@ -336,7 +375,7 @@ func GetExams(c *gin.Context) {
 		CompletedCount int
 	}{}
 	query := DB.Model(&Exam{}).Select("exams.*, subjects.subject_name, classes.class_name, (SELECT COUNT(*) FROM questions WHERE questions.exam_id = exams.id) AS question_count, (SELECT COUNT(*) FROM exam_results WHERE exam_results.exam_id = exams.id) AS completed_count").Joins("JOIN subjects ON subjects.id = exams.subject_id").Joins("JOIN classes ON classes.id = exams.class_id")
-	if c.GetFloat64("role_id") != 1 {
+	if restrictTeacher(c) {
 		query = query.Where("subjects.teacher_id = ?", c.GetString("user_id"))
 	}
 	if err := query.Order("exams.date DESC, exams.id DESC").Scan(&rows).Error; err != nil {

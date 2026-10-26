@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -55,29 +56,39 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 type Class struct {
 	ID                uint   `gorm:"primaryKey"`
 	ClassName         string `gorm:"unique;not null"`
+	Program           string `gorm:"default:reguler"`
 	Major             string
 	HomeroomTeacherID *string
 	HomeroomTeacher   *User `gorm:"foreignKey:HomeroomTeacherID;constraint:OnDelete:RESTRICT;"`
 	CreatedAt         time.Time
 }
 type Subject struct {
-	ID          uint   `gorm:"primaryKey"`
-	SubjectName string `gorm:"not null"`
-	TeacherID   string
-	Teacher     User `gorm:"foreignKey:TeacherID;constraint:OnDelete:RESTRICT;"`
+	AllocationConfigured bool
+	ClassIDs             []uint `gorm:"-"`
+	ID                   uint   `gorm:"primaryKey"`
+	SubjectName          string `gorm:"not null"`
+	TeacherID            string
+	Teacher              User `gorm:"foreignKey:TeacherID;constraint:OnDelete:RESTRICT;"`
 }
 type Schedule struct {
-	ID        uint `gorm:"primaryKey"`
-	ClassID   uint
-	Class     Class `gorm:"constraint:OnDelete:CASCADE;"`
-	SubjectID uint
-	Subject   Subject `gorm:"constraint:OnDelete:CASCADE;"`
-	DayOfWeek string
-	StartTime string
-	EndTime   string
+	TeacherCode    string
+	AcademicYear   string `gorm:"index:idx_schedule_period"`
+	Semester       string `gorm:"default:Ganjil;index:idx_schedule_period"`
+	EffectiveFrom  string `gorm:"default:2000-01-01"`
+	EffectiveUntil string `gorm:"default:9999-12-31"`
+	ID             uint   `gorm:"primaryKey"`
+	ClassID        uint
+	Class          Class `gorm:"constraint:OnDelete:CASCADE;"`
+	SubjectID      uint
+	Subject        Subject `gorm:"constraint:OnDelete:CASCADE;"`
+	DayOfWeek      string
+	StartTime      string
+	EndTime        string
 }
 type Material struct {
-	ID         uint `gorm:"primaryKey"`
+	AssetID    *uint
+	Asset      *MediaAsset `gorm:"constraint:OnDelete:RESTRICT;" json:"-"`
+	ID         uint        `gorm:"primaryKey"`
 	SubjectID  uint
 	Subject    Subject `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
 	ClassID    uint
@@ -87,16 +98,19 @@ type Material struct {
 	UploadedBy string
 }
 type Assignment struct {
-	ID        uint `gorm:"primaryKey"`
-	SubjectID uint
-	Subject   Subject `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
-	ClassID   uint
-	Class     Class  `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
-	Title     string `gorm:"not null"`
-	Deadline  time.Time
-	MaxScore  int `gorm:"default:100"`
+	AnswerFormats string `gorm:"default:link"`
+	CreatedAt     time.Time
+	ID            uint `gorm:"primaryKey"`
+	SubjectID     uint
+	Subject       Subject `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
+	ClassID       uint
+	Class         Class  `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
+	Title         string `gorm:"not null"`
+	Deadline      time.Time
+	MaxScore      int `gorm:"default:100"`
 }
 type Submission struct {
+	Attachments  string     `gorm:"default:[]"`
 	ID           uint       `gorm:"primaryKey"`
 	AssignmentID uint       `gorm:"uniqueIndex:idx_submission_student_assignment"`
 	Assignment   Assignment `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
@@ -121,6 +135,10 @@ type Exam struct {
 	IsActive  bool `gorm:"default:false"`
 }
 type Question struct {
+	Kind          string  `gorm:"default:mcq"`
+	Points        float64 `gorm:"default:1"`
+	ImageAssetID  *uint
+	OptionE       string
 	ID            uint `gorm:"primaryKey"`
 	ExamID        uint
 	Exam          Exam `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
@@ -132,16 +150,17 @@ type Question struct {
 	CorrectAnswer string
 }
 type ExamResult struct {
-	ID        uint   `gorm:"primaryKey"`
-	ExamID    uint   `gorm:"uniqueIndex:idx_result_student_exam"`
-	Exam      Exam   `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
-	StudentID string `gorm:"uniqueIndex:idx_result_student_exam"`
-	Student   User   `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
-	Score     float64
+	PendingGrading bool
+	ID             uint   `gorm:"primaryKey"`
+	ExamID         uint   `gorm:"uniqueIndex:idx_result_student_exam"`
+	Exam           Exam   `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
+	StudentID      string `gorm:"uniqueIndex:idx_result_student_exam"`
+	Student        User   `gorm:"constraint:OnDelete:CASCADE;" json:"-"`
+	Score          float64
 }
 
 func seedRoles() {
-	for _, role := range []Role{{1, "Admin"}, {2, "Guru"}, {3, "Siswa"}} {
+	for _, role := range []Role{{1, "Admin"}, {2, "Guru"}, {3, "Siswa"}, {4, "Kepala Sekolah"}, {5, "Waka Kurikulum"}, {6, "Super Admin"}} {
 		if err := DB.FirstOrCreate(&role, Role{ID: role.ID}).Error; err != nil {
 			log.Fatal(err)
 		}
@@ -156,7 +175,10 @@ func migrateDatabase() error {
 		}
 	}
 
-	if err := DB.AutoMigrate(&Role{}, &User{}, &Class{}, &Subject{}, &Schedule{}, &Material{}, &Assignment{}, &Submission{}, &Exam{}, &Question{}, &ExamResult{}, &ExamAttempt{}, &SchoolSettings{}); err != nil {
+	if err := DB.AutoMigrate(&Role{}, &User{}, &Class{}, &Subject{}, &Schedule{}, &Material{}, &Assignment{}, &Submission{}, &Exam{}, &Question{}, &ExamResult{}, &ExamAttempt{}, &SchoolSettings{}, &MediaAsset{}, &TeachingAllocation{}); err != nil {
+		return err
+	}
+	if err := migrateAcademicRevision(); err != nil {
 		return err
 	}
 	// Preserve dangling legacy references for administrators; the original database is backed up before migration.
@@ -196,7 +218,7 @@ func backupDatabase(databasePath string) (string, error) {
 	return target, nil
 }
 func main() {
-	bootstrap := flag.Bool("bootstrap-admin", false, "Create first administrator from BOOTSTRAP_ADMIN_* environment")
+	bootstrap := flag.Bool("bootstrap-admin", false, "Create first super administrator from BOOTSTRAP_ADMIN_* environment")
 	backup := flag.Bool("backup", false, "Create a consistent SQLite backup and exit")
 	flag.Parse()
 	if err := loadEnvironment(".env"); err != nil {
@@ -239,7 +261,7 @@ func main() {
 		if err := bootstrapAdministrator(); err != nil {
 			log.Fatal(err)
 		}
-		log.Println("Administrator pertama berhasil dibuat.")
+		log.Println("Super Admin pertama berhasil dibuat.")
 		return
 	}
 	if err := finalizeExpiredAttempts(time.Now().UTC()); err != nil {
@@ -292,8 +314,12 @@ func newRouter() *gin.Engine {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
-		if c.Request.URL.Path != "/api/admin/import" {
-			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024*1024)
+		if c.Request.URL.Path != "/api/admin/import" && c.Request.URL.Path != "/api/uploads/local" && c.Request.URL.Path != "/api/admin/schedules/import/preview" {
+			limit := int64(1024 * 1024)
+			if strings.Contains(c.Request.URL.Path, "/student/exams/") || strings.HasSuffix(c.Request.URL.Path, "/questions/import") || c.Request.URL.Path == "/api/admin/schedules/import" {
+				limit = 4 * 1024 * 1024
+			}
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		}
 		c.Next()
 	})
@@ -315,8 +341,20 @@ func newRouter() *gin.Engine {
 	r.POST("/api/register", Register)
 	api := r.Group("/api", AuthMiddleware())
 	api.GET("/auth/me", CurrentSession)
+	api.GET("/analytics", GetAnalytics)
 	api.POST("/auth/logout", Logout)
 	api.PUT("/auth/password", ChangePassword)
+	api.GET("/uploads/:id/access", AccessMedia)
+	api.POST("/uploads/init", InitMedia)
+	api.POST("/uploads/:id/complete", CompleteMedia)
+	api.POST("/uploads/local", UploadLocalMedia)
+	api.GET("/uploads/:id/content", MediaContent)
+	api.GET("/uploads/:id/preview", PreviewOfficeMedia)
+	api.GET("/monitor/overview", MonitorOverview)
+	api.GET("/monitor/classes", MonitorClasses)
+	api.GET("/monitor/teachers", MonitorTeachers)
+	api.GET("/admin/allocations", GetAllocations)
+	api.PUT("/admin/allocations", SaveAllocations)
 	api.GET("/settings", GetSchoolSettings)
 	api.PUT("/admin/settings", UpdateSchoolSettings)
 	api.GET("/subjects", GetSubjects)
@@ -338,6 +376,8 @@ func newRouter() *gin.Engine {
 	api.GET("/admin/import/template", DownloadImportTemplate)
 	api.GET("/schedules", GetSchedules)
 	api.POST("/admin/schedules", CreateSchedule)
+	api.POST("/admin/schedules/import/preview", PreviewScheduleImport)
+	api.POST("/admin/schedules/import", CommitScheduleImport)
 	api.PUT("/admin/schedules/:id", UpdateSchedule)
 	api.DELETE("/admin/schedules/:id", DeleteSchedule)
 	api.GET("/teacher/classes", GetTeacherClasses)
@@ -358,9 +398,14 @@ func newRouter() *gin.Engine {
 	api.PUT("/teacher/exams/:id/active", SetExamActive)
 	api.GET("/teacher/exams/:id/questions", GetQuestionsByExam)
 	api.POST("/teacher/exams/questions", CreateQuestion)
+	api.PUT("/teacher/exams/questions/:id", UpdateQuestion)
+	api.POST("/teacher/exams/:id/questions/import", ImportQuestions)
+	api.GET("/teacher/exams/:id/essays", GetExamEssays)
+	api.PUT("/teacher/exams/:id/essays/:student_id", GradeExamEssays)
 	api.DELETE("/teacher/exams/questions/:id", DeleteQuestion)
 	api.GET("/teacher/exams/:id/results", GetTeacherExamResults)
 	api.GET("/teacher/export/report", ExportTeacherReport)
+	api.GET("/teacher/export/report/preview", PreviewTeacherReport)
 	api.GET("/student/overview", GetStudentOverview)
 	api.GET("/student/grades", GetStudentGrades)
 	api.GET("/student/materials", GetStudentMaterials)

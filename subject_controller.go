@@ -28,6 +28,10 @@ func GetSubjects(c *gin.Context) {
 		sendExamError(c, err)
 		return
 	}
+	if err := attachSubjectClasses(subjects); err != nil {
+		sendExamError(c, err)
+		return
+	}
 	c.JSON(200, gin.H{"data": subjects})
 }
 func CreateSubject(c *gin.Context) { saveSubject(c, false) }
@@ -37,8 +41,9 @@ func saveSubject(c *gin.Context, update bool) {
 		return
 	}
 	var input struct {
-		SubjectName string `json:"subject_name" binding:"required"`
-		TeacherID   string `json:"teacher_id" binding:"required"`
+		SubjectName string  `json:"subject_name" binding:"required"`
+		TeacherID   string  `json:"teacher_id" binding:"required"`
+		ClassIDs    *[]uint `json:"class_ids"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || !validText(input.SubjectName, 100) {
 		c.JSON(400, gin.H{"error": "Nama mapel dan guru pengampu wajib diisi."})
@@ -52,7 +57,13 @@ func saveSubject(c *gin.Context, update bool) {
 		}
 		if !update {
 			subject = Subject{SubjectName: strings.TrimSpace(input.SubjectName), TeacherID: input.TeacherID}
-			return tx.Create(&subject).Error
+			if err := tx.Create(&subject).Error; err != nil {
+				return err
+			}
+			if input.ClassIDs != nil {
+				return replaceAllocations(tx, subject.ID, *input.ClassIDs)
+			}
+			return nil
 		}
 		id, err := examID(c)
 		if err != nil {
@@ -61,7 +72,13 @@ func saveSubject(c *gin.Context, update bool) {
 		if err := tx.First(&subject, id).Error; err != nil {
 			return err
 		}
-		return tx.Model(&subject).Updates(map[string]interface{}{"subject_name": strings.TrimSpace(input.SubjectName), "teacher_id": input.TeacherID}).Error
+		if err := tx.Model(&subject).Updates(map[string]interface{}{"subject_name": strings.TrimSpace(input.SubjectName), "teacher_id": input.TeacherID}).Error; err != nil {
+			return err
+		}
+		if input.ClassIDs != nil {
+			return replaceAllocations(tx, subject.ID, *input.ClassIDs)
+		}
+		return nil
 	})
 	if err != nil {
 		sendExamError(c, err)

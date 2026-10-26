@@ -24,9 +24,21 @@ func hasRole(c *gin.Context, roles ...uint) bool {
 	c.AbortWithStatusJSON(403, gin.H{"error": "Anda tidak memiliki hak akses untuk tindakan ini."})
 	return false
 }
-func isAdmin(c *gin.Context) bool       { return hasRole(c, 1) }
-func isSiswa(c *gin.Context) bool       { return hasRole(c, 3) }
-func isGuruOrAdmin(c *gin.Context) bool { return hasRole(c, 1, 2) }
+func isAdmin(c *gin.Context) bool          { return hasRole(c, 1) }
+func isSuperAdmin(c *gin.Context) bool     { return hasRole(c, 6) }
+func isAccountManager(c *gin.Context) bool { return hasRole(c, 1, 6) }
+func mayManageRole(c *gin.Context, role uint) bool {
+	requester := uint(c.GetFloat64("role_id"))
+	return (requester == 6 && role == 1) || (requester == 1 && role >= 2 && role <= 5)
+}
+func isSiswa(c *gin.Context) bool { return hasRole(c, 3) }
+func isGuruOrAdmin(c *gin.Context) bool {
+	if c.Request.Method == "GET" {
+		return hasRole(c, 1, 2, 4, 5)
+	}
+	return hasRole(c, 1, 2)
+}
+func restrictTeacher(c *gin.Context) bool { return c.GetFloat64("role_id") == 2 }
 func validText(value string, max int) bool {
 	return strings.TrimSpace(value) != "" && len([]rune(value)) <= max
 }
@@ -51,7 +63,7 @@ func validatePassword(value string) error {
 func ownedSubject(tx *gorm.DB, c *gin.Context, id uint) (Subject, error) {
 	var subject Subject
 	query := tx.Where("id = ?", id)
-	if c.GetFloat64("role_id") != 1 {
+	if restrictTeacher(c) {
 		query = query.Where("teacher_id = ?", c.GetString("user_id"))
 	}
 	err := query.First(&subject).Error
@@ -60,7 +72,7 @@ func ownedSubject(tx *gorm.DB, c *gin.Context, id uint) (Subject, error) {
 func ownedAssignment(tx *gorm.DB, c *gin.Context, id uint) (Assignment, error) {
 	var assignment Assignment
 	query := tx.Model(&Assignment{}).Where("assignments.id = ?", id)
-	if c.GetFloat64("role_id") != 1 {
+	if restrictTeacher(c) {
 		query = query.Joins("JOIN subjects ON subjects.id = assignments.subject_id").Where("subjects.teacher_id = ?", c.GetString("user_id"))
 	}
 	err := query.First(&assignment).Error
@@ -69,14 +81,15 @@ func ownedAssignment(tx *gorm.DB, c *gin.Context, id uint) (Assignment, error) {
 func ownedMaterial(tx *gorm.DB, c *gin.Context, id uint) (Material, error) {
 	var material Material
 	query := tx.Model(&Material{}).Where("materials.id = ?", id)
-	if c.GetFloat64("role_id") != 1 {
+	if restrictTeacher(c) {
 		query = query.Joins("JOIN subjects ON subjects.id = materials.subject_id").Where("subjects.teacher_id = ?", c.GetString("user_id"))
 	}
 	err := query.First(&material).Error
 	return material, err
 }
 func validateTarget(tx *gorm.DB, c *gin.Context, subjectID, classID uint) error {
-	if _, err := ownedSubject(tx, c, subjectID); err != nil {
+	subject, err := ownedSubject(tx, c, subjectID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return failExam(403, "Anda tidak mengampu mata pelajaran ini.")
 		}
@@ -88,6 +101,19 @@ func validateTarget(tx *gorm.DB, c *gin.Context, subjectID, classID uint) error 
 			return failExam(400, "Kelas tujuan tidak ditemukan.")
 		}
 		return err
+	}
+	{
+		var allocationCount int64
+		if err := tx.Model(&TeachingAllocation{}).Where("subject_id = ? AND class_id = ?", subjectID, classID).Count(&allocationCount).Error; err != nil {
+			return err
+		}
+		var total int64
+		if err := tx.Model(&TeachingAllocation{}).Where("subject_id = ?", subjectID).Count(&total).Error; err != nil {
+			return err
+		}
+		if (total > 0 || subject.AllocationConfigured) && allocationCount == 0 {
+			return failExam(403, "Kelas ini belum ditugaskan untuk mapel Anda.")
+		}
 	}
 	return nil
 }

@@ -19,7 +19,7 @@ func loadEnvironment(path string) error {
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
-	allowed := map[string]bool{"JWT_SECRET": true, "DB_PATH": true, "PORT": true, "FRONTEND_ORIGIN": true, "AUTO_BACKUP": true, "BOOTSTRAP_ADMIN_NAME": true, "BOOTSTRAP_ADMIN_EMAIL": true, "BOOTSTRAP_ADMIN_PASSWORD": true}
+	allowed := map[string]bool{"JWT_SECRET": true, "DB_PATH": true, "PORT": true, "FRONTEND_ORIGIN": true, "AUTO_BACKUP": true, "UPLOAD_DIR": true, "S3_ENDPOINT": true, "S3_BUCKET": true, "S3_REGION": true, "S3_ACCESS_KEY_ID": true, "S3_SECRET_ACCESS_KEY": true, "BOOTSTRAP_ADMIN_NAME": true, "BOOTSTRAP_ADMIN_EMAIL": true, "BOOTSTRAP_ADMIN_PASSWORD": true}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -39,7 +39,7 @@ func loadEnvironment(path string) error {
 	return scanner.Err()
 }
 func bootstrapAdministrator() error {
-	input := UserInput{Name: os.Getenv("BOOTSTRAP_ADMIN_NAME"), Email: os.Getenv("BOOTSTRAP_ADMIN_EMAIL"), Password: os.Getenv("BOOTSTRAP_ADMIN_PASSWORD"), RoleID: 1}
+	input := UserInput{Name: os.Getenv("BOOTSTRAP_ADMIN_NAME"), Email: os.Getenv("BOOTSTRAP_ADMIN_EMAIL"), Password: os.Getenv("BOOTSTRAP_ADMIN_PASSWORD"), RoleID: 6}
 	if err := normalizeUser(&input); err != nil {
 		return err
 	}
@@ -52,12 +52,12 @@ func bootstrapAdministrator() error {
 	}
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var count int64
-		if err := tx.Model(&User{}).Where("role_id = 1").Count(&count).Error; err != nil {
+		if err := tx.Model(&User{}).Where("role_id = 6").Count(&count).Error; err != nil {
 			return err
 		}
 		if count > 0 {
-			return errors.New("administrator sudah tersedia; bootstrap tidak mengubah akun existing")
+			return errors.New("super administrator sudah tersedia; bootstrap tidak mengubah akun existing")
 		}
-		return tx.Create(&User{Name: input.Name, Email: input.Email, RoleID: 1, PasswordHash: string(hash)}).Error
+		return tx.Create(&User{Name: input.Name, Email: input.Email, RoleID: 6, PasswordHash: string(hash)}).Error
 	})
 }

@@ -1,0 +1,6 @@
+.env*
+*.db*
+backups/
+uploads/
+*.exe
+*_test.go

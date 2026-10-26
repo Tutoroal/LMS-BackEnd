@@ -127,7 +127,28 @@ func ImportDataExcel(c *gin.Context) {
 			records = append(records, record)
 		}
 	}
-	if len(records) == 0 {
+	allocationRows := [][]string{}
+	for _, sheet := range workbook.GetSheetList() {
+		if strings.EqualFold(strings.TrimSpace(sheet), "Pengampu") {
+			rows, err := workbook.GetRows(sheet)
+			if err != nil {
+				sendExamError(c, err)
+				return
+			}
+			if len(rows) > 1001 {
+				c.JSON(400, gin.H{"error": "Maksimal 1000 penugasan per import."})
+				return
+			}
+			if len(rows) > 1 {
+				for _, row := range rows[1:] {
+					if strings.TrimSpace(strings.Join(row, "")) != "" {
+						allocationRows = append(allocationRows, row)
+					}
+				}
+			}
+		}
+	}
+	if len(records) == 0 && len(allocationRows) == 0 {
 		c.JSON(400, gin.H{"error": "Gunakan sheet Guru dan/atau Siswa sesuai template."})
 		return
 	}
@@ -200,6 +221,36 @@ func ImportDataExcel(c *gin.Context) {
 				updated++
 			}
 		}
+		for index, row := range allocationRows {
+			email, err := normalizedEmail(safeGet(row, 0))
+			if err != nil {
+				return failExam(400, fmt.Sprintf("Pengampu baris %d: email guru tidak valid.", index+2))
+			}
+			subjectName := safeGet(row, 1)
+			className := strings.ToUpper(safeGet(row, 2))
+			if !validText(subjectName, 100) || className == "" {
+				return failExam(400, fmt.Sprintf("Pengampu baris %d: isi email guru, mapel, dan kelas.", index+2))
+			}
+			var teacher User
+			if err := tx.Where("email=? AND role_id=2", email).First(&teacher).Error; err != nil {
+				return failExam(400, fmt.Sprintf("Pengampu baris %d: guru tidak ditemukan.", index+2))
+			}
+			var class Class
+			if err := tx.Where("UPPER(class_name)=?", className).First(&class).Error; err != nil {
+				return failExam(400, fmt.Sprintf("Pengampu baris %d: kelas belum dibuat.", index+2))
+			}
+			var subject Subject
+			if err := tx.Where("teacher_id=? AND LOWER(subject_name)=?", teacher.ID, strings.ToLower(subjectName)).Attrs(Subject{SubjectName: subjectName, TeacherID: teacher.ID, AllocationConfigured: true}).FirstOrCreate(&subject).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&subject).Update("allocation_configured", true).Error; err != nil {
+				return err
+			}
+			allocation := TeachingAllocation{SubjectID: subject.ID, ClassID: class.ID}
+			if err := tx.Where("subject_id=? AND class_id=?", subject.ID, class.ID).FirstOrCreate(&allocation).Error; err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -222,9 +273,14 @@ func DownloadImportTemplate(c *gin.Context) {
 		sendExamError(c, err)
 		return
 	}
+	if _, err := workbook.NewSheet("Pengampu"); err != nil {
+		sendExamError(c, err)
+		return
+	}
 	for sheet, headers := range map[string][]string{
-		"Guru":  {"Nama", "Email", "Password", "NIP/NUPTK", "Tempat Lahir", "Tanggal Lahir (YYYY-MM-DD)", "Jenis Kelamin", "Specialty"},
-		"Siswa": {"Nama", "Email", "Password", "NISN", "NIS", "Tempat Lahir", "Tanggal Lahir (YYYY-MM-DD)", "Jenis Kelamin", "Kelas"},
+		"Pengampu": {"Email Guru", "Mata Pelajaran", "Kelas"},
+		"Guru":     {"Nama", "Email", "Password", "NIP/NUPTK", "Tempat Lahir", "Tanggal Lahir (YYYY-MM-DD)", "Jenis Kelamin", "Specialty"},
+		"Siswa":    {"Nama", "Email", "Password", "NISN", "NIS", "Tempat Lahir", "Tanggal Lahir (YYYY-MM-DD)", "Jenis Kelamin", "Kelas"},
 	} {
 		for index, header := range headers {
 			cell, _ := excelize.CoordinatesToCellName(index+1, 1)

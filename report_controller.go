@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/xuri/excelize/v2"
+	"gorm.io/gorm"
 	"time"
 )
 
@@ -43,70 +44,169 @@ func reportSheet(workbook *excelize.File, name string, headers []string, rows []
 	last, _ := excelize.ColumnNumberToName(len(headers))
 	return workbook.SetColWidth(name, "A", last, 24)
 }
+
+type taskReportRow struct {
+	AssignmentID uint
+	ClassID      uint
+	SubjectID    uint
+	TeacherID    string
+	TeacherName  string
+	SubjectName  string
+	ClassName    string
+	Title        string
+	StudentName  string
+	NIS          string
+	StudentID    string
+	Score        int
+	MaxScore     int
+	Feedback     string
+	Deadline     time.Time
+	SubmittedAt  *time.Time
+	GradedAt     *time.Time
+}
+
+func reportRange(month string) (time.Time, time.Time, error) {
+	if month == "" {
+		return time.Time{}, time.Time{}, nil
+	}
+	start, err := time.ParseInLocation("2006-01", month, schoolZone)
+	if err != nil || start.Format("2006-01") != month {
+		return start, start, failExam(400, "Bulan laporan harus YYYY-MM.")
+	}
+	return start.UTC(), start.AddDate(0, 1, 0).UTC(), nil
+}
+func reportScope(c *gin.Context, query *gorm.DB) *gorm.DB {
+	if restrictTeacher(c) {
+		query = query.Where("subjects.teacher_id=?", c.GetString("user_id"))
+	} else if id := c.Query("teacher_id"); id != "" {
+		query = query.Where("subjects.teacher_id=?", id)
+	}
+	if id := c.Query("class_id"); id != "" {
+		query = query.Where("classes.id=?", id)
+	}
+	if id := c.Query("subject_id"); id != "" {
+		query = query.Where("subjects.id=?", id)
+	}
+	return query
+}
 func ExportTeacherReport(c *gin.Context) {
 	if !isGuruOrAdmin(c) {
+		return
+	}
+	if err := validateReportFilters(c); err != nil {
+		sendExamError(c, err)
+		return
+	}
+	start, end, err := reportRange(c.Query("month"))
+	if err != nil {
+		sendExamError(c, err)
+		return
+	}
+	basis := c.DefaultQuery("basis", "all")
+	if basis != "all" && basis != "deadline" && basis != "submitted" && basis != "graded" {
+		c.JSON(400, gin.H{"error": "Dasar bulan harus deadline, submitted, graded, atau all."})
 		return
 	}
 	if err := finalizeExpiredAttempts(time.Now().UTC()); err != nil {
 		sendExamError(c, err)
 		return
 	}
-	taskRows := []struct {
-		SubjectName string
-		ClassName   string
-		Title       string
-		StudentName string
-		NIS         string
-		Score       int
-		MaxScore    int
-		Feedback    string
-		GradedAt    *time.Time
-	}{}
-	query := DB.Table("submissions").Select("subjects.subject_name, classes.class_name, assignments.title, users.name AS student_name, users.nis, submissions.score, assignments.max_score, submissions.feedback, submissions.graded_at").Joins("JOIN assignments ON assignments.id = submissions.assignment_id").Joins("JOIN subjects ON subjects.id = assignments.subject_id").Joins("JOIN classes ON classes.id = assignments.class_id").Joins("JOIN users ON users.id = submissions.student_id")
-	if c.GetFloat64("role_id") != 1 {
-		query = query.Where("subjects.teacher_id = ?", c.GetString("user_id"))
-	}
-	if err := query.Order("subjects.subject_name, assignments.title, users.name").Scan(&taskRows).Error; err != nil {
-		sendExamError(c, err)
-		return
-	}
-	tasks := [][]interface{}{}
-	for _, row := range taskRows {
-		var value interface{} = ""
-		status := "Belum dinilai"
-		if row.GradedAt != nil {
-			status = "Dinilai"
-			value = row.Score
-		}
-		tasks = append(tasks, []interface{}{row.SubjectName, row.ClassName, row.Title, row.StudentName, row.NIS, value, row.MaxScore, status, row.Feedback})
-	}
-	examRows := []struct {
-		SubjectName string
-		ClassName   string
-		Title       string
-		StudentName string
-		NIS         string
-		Score       float64
-	}{}
-	query = DB.Table("exam_results").Select("subjects.subject_name, classes.class_name, exams.title, users.name AS student_name, users.nis, exam_results.score").Joins("JOIN exams ON exams.id = exam_results.exam_id").Joins("JOIN subjects ON subjects.id = exams.subject_id").Joins("JOIN classes ON classes.id = exams.class_id").Joins("JOIN users ON users.id = exam_results.student_id")
-	if c.GetFloat64("role_id") != 1 {
-		query = query.Where("subjects.teacher_id = ?", c.GetString("user_id"))
-	}
-	if err := query.Order("subjects.subject_name, exams.title, users.name").Scan(&examRows).Error; err != nil {
-		sendExamError(c, err)
-		return
-	}
-	exams := [][]interface{}{}
-	for _, row := range examRows {
-		exams = append(exams, []interface{}{row.SubjectName, row.ClassName, row.Title, row.StudentName, row.NIS, row.Score, 100})
-	}
 	workbook := excelize.NewFile()
 	defer workbook.Close()
-	if err := reportSheet(workbook, "Nilai Tugas", []string{"Mapel", "Kelas", "Tugas", "Nama Siswa", "NIS", "Nilai", "Maksimal", "Status", "Catatan"}, tasks); err != nil {
+	for _, item := range []struct {
+		Key    string
+		Column string
+		Name   string
+	}{{"deadline", "assignments.deadline", "Tenggat"}, {"submitted", "submissions.submitted_at", "Pengumpulan"}, {"graded", "submissions.graded_at", "Penilaian"}} {
+		if basis != "all" && basis != item.Key {
+			continue
+		}
+		rows, err := loadTaskReportRows(c, start, end, item.Key, item.Column)
+		if err != nil {
+			sendExamError(c, err)
+			return
+		}
+		values := [][]interface{}{}
+		type sum struct {
+			Name      string
+			NIS       string
+			Class     string
+			Subject   string
+			Total     int
+			Submitted int
+			Graded    int
+			Score     float64
+		}
+		summaries := map[string]*sum{}
+		order := []string{}
+		for _, row := range rows {
+			status := "Belum mengumpulkan"
+			var value interface{} = ""
+			if row.SubmittedAt != nil {
+				status = "Belum dinilai"
+			}
+			if row.GradedAt != nil {
+				status = "Dinilai"
+				value = row.Score
+			}
+			values = append(values, []interface{}{row.SubjectName, row.ClassName, row.Title, row.StudentName, row.NIS, value, row.MaxScore, status, row.Deadline.In(schoolZone).Format("2006-01-02 15:04"), reportTime(row.SubmittedAt), reportTime(row.GradedAt), row.Feedback})
+			key := fmt.Sprintf("%s/%d/%d", row.StudentID, row.ClassID, row.SubjectID)
+			if summaries[key] == nil {
+				summaries[key] = &sum{Name: row.StudentName, NIS: row.NIS, Class: row.ClassName, Subject: row.SubjectName}
+				order = append(order, key)
+			}
+			summary := summaries[key]
+			summary.Total++
+			if row.SubmittedAt != nil {
+				summary.Submitted++
+			}
+			if row.GradedAt != nil {
+				summary.Graded++
+				if row.MaxScore > 0 {
+					summary.Score += float64(row.Score) * 100 / float64(row.MaxScore)
+				}
+			}
+		}
+		if err := reportSheet(workbook, taskSheetName(item.Key, item.Name), []string{"Mapel", "Kelas", "Tugas", "Nama Siswa", "NIS", "Nilai", "Maksimal", "Status", "Tenggat WIB", "Dikumpulkan WIB", "Dinilai WIB", "Catatan"}, values); err != nil {
+			sendExamError(c, err)
+			return
+		}
+		aggregate := [][]interface{}{}
+		for _, key := range order {
+			row := summaries[key]
+			var avg interface{} = ""
+			denominator := row.Graded
+			if c.Query("missing_zero") == "true" {
+				denominator = row.Graded + (row.Total - row.Submitted)
+			}
+			if denominator > 0 {
+				avg = row.Score / float64(denominator)
+			}
+			aggregate = append(aggregate, []interface{}{row.Name, row.NIS, row.Class, row.Subject, row.Total, row.Submitted, row.Graded, row.Total - row.Submitted, row.Submitted - row.Graded, avg})
+		}
+		if err := reportSheet(workbook, "Rekap "+item.Name, []string{"Nama", "NIS", "Kelas", "Mapel", "Jumlah Tugas", "Dikumpulkan", "Dinilai", "Belum Mengumpulkan", "Belum Dinilai", "Rata-rata /100"}, aggregate); err != nil {
+			sendExamError(c, err)
+			return
+		}
+	}
+	exams, err := loadExamReportRows(c, start, end)
+	if err != nil {
 		sendExamError(c, err)
 		return
 	}
-	if err := reportSheet(workbook, "Nilai Ujian", []string{"Mapel", "Kelas", "Ujian", "Nama Siswa", "NIS", "Nilai", "Maksimal"}, exams); err != nil {
+	examRows := [][]interface{}{}
+	for _, row := range exams {
+		status := "Final"
+		if row.PendingGrading {
+			status = "Menunggu penilaian esai"
+		}
+		examRows = append(examRows, []interface{}{row.SubjectName, row.ClassName, row.Title, row.StudentName, row.NIS, row.Score, 100, status})
+	}
+	if err := reportSheet(workbook, "Nilai Ujian", []string{"Mapel", "Kelas", "Ujian", "Nama Siswa", "NIS", "Nilai", "Maksimal", "Status"}, examRows); err != nil {
+		sendExamError(c, err)
+		return
+	}
+	if err := enrichReportWorkbook(c, workbook, start, end, basis); err != nil {
 		sendExamError(c, err)
 		return
 	}
@@ -114,5 +214,20 @@ func ExportTeacherReport(c *gin.Context) {
 		sendExamError(c, err)
 		return
 	}
+	index, _ := workbook.GetSheetIndex("Ringkasan")
+	workbook.SetActiveSheet(index)
 	sendWorkbook(c, workbook, "Laporan_Nilai_Siswa.xlsx")
+}
+func reportTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.In(schoolZone).Format("2006-01-02 15:04")
+}
+
+func taskSheetName(key, name string) string {
+	if key == "deadline" {
+		return "Nilai Tugas"
+	}
+	return "Tugas " + name
 }
