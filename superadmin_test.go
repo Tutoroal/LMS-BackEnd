@@ -47,3 +47,22 @@ func TestBootstrapCreatesFirstSuperAdmin(t *testing.T) {
 		t.Fatal("second super admin bootstrap should be rejected")
 	}
 }
+
+func TestPasswordUpdateAllowsUnchangedLegacyIdentifier(t *testing.T) {
+	r := setupCBT(t)
+	if err := DB.Model(&User{}).Where("id IN ?", []string{"teacher", "other-teacher"}).Update("nisn_nip", "NIP-DUPLIKAT-LAMA").Error; err != nil {
+		t.Fatal(err)
+	}
+	response := requestCBT(r, tokenFor(t, "admin", 1), "PUT", "/api/admin/users/teacher", `{"name":"Guru","email":"t@test.local","password":"Password-Baru-123","role_id":2,"nisn_nip":"NIP-DUPLIKAT-LAMA"}`)
+	expectStatus(t, response, 200)
+	var teacher User
+	if err := DB.First(&teacher, "id = ?", "teacher").Error; err != nil {
+		t.Fatal(err)
+	}
+	if teacher.SessionVersion != 1 || teacher.PasswordHash == "" {
+		t.Fatal("password update was not persisted and old sessions were not revoked")
+	}
+
+	expectStatus(t, requestCBT(r, tokenFor(t, "admin", 1), "PUT", "/api/admin/users/teacher", `{"name":"Guru","email":"t@test.local","role_id":2,"nisn_nip":"NIP-BARU"}`), 200)
+	expectStatus(t, requestCBT(r, tokenFor(t, "admin", 1), "PUT", "/api/admin/users/other-teacher", `{"name":"Guru lain","email":"ot@test.local","role_id":2,"nisn_nip":"NIP-BARU"}`), 409)
+}

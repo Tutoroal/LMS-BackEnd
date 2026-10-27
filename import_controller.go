@@ -183,7 +183,11 @@ func ImportDataExcel(c *gin.Context) {
 				}
 				input.ClassID = &class.ID
 			}
-			if err := validateUserRelations(tx, input, user.ID); err != nil {
+			var relationCurrent *User
+			if exists {
+				relationCurrent = &user
+			}
+			if err := validateUserRelations(tx, input, relationCurrent); err != nil {
 				return failExam(409, context+": "+err.Error())
 			}
 			if !exists {

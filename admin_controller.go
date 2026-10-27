@@ -237,7 +237,7 @@ func normalizeUser(input *UserInput) error {
 	}
 	return nil
 }
-func validateUserRelations(tx *gorm.DB, input UserInput, exceptID string) error {
+func validateUserRelations(tx *gorm.DB, input UserInput, current *User) error {
 	if input.ClassID != nil {
 		var class Class
 		if err := tx.First(&class, *input.ClassID).Error; err != nil {
@@ -247,18 +247,31 @@ func validateUserRelations(tx *gorm.DB, input UserInput, exceptID string) error 
 			return err
 		}
 	}
+	exceptID := ""
+	if current != nil {
+		exceptID = current.ID
+	}
 	var count int64
-	if err := tx.Model(&User{}).Where("LOWER(email) = ? AND id <> ?", input.Email, exceptID).Count(&count).Error; err != nil {
-		return err
+	if current == nil || !strings.EqualFold(current.Email, input.Email) {
+		if err := tx.Model(&User{}).Where("LOWER(email) = ? AND id <> ?", input.Email, exceptID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return failExam(409, "Email sudah digunakan akun lain.")
+		}
 	}
-	if count > 0 {
-		return failExam(409, "Email sudah digunakan akun lain.")
+	identifiers := []struct {
+		value     string
+		unchanged bool
+	}{
+		{input.NISN_NIP, current != nil && current.NISN_NIP == input.NISN_NIP},
+		{input.NIS, current != nil && current.NIS == input.NIS},
 	}
-	for _, identifier := range []string{input.NISN_NIP, input.NIS} {
-		if identifier == "" {
+	for _, identifier := range identifiers {
+		if identifier.value == "" || identifier.unchanged {
 			continue
 		}
-		if err := tx.Model(&User{}).Where("id <> ? AND (nisn_nip = ? OR nis = ? OR LOWER(email) = ?)", exceptID, identifier, identifier, strings.ToLower(identifier)).Count(&count).Error; err != nil {
+		if err := tx.Model(&User{}).Where("id <> ? AND (nisn_nip = ? OR nis = ? OR LOWER(email) = ?)", exceptID, identifier.value, identifier.value, strings.ToLower(identifier.value)).Count(&count).Error; err != nil {
 			return err
 		}
 		if count > 0 {
@@ -331,7 +344,11 @@ func saveUser(c *gin.Context, update bool) {
 				return failExam(409, "Peran akun tidak dapat diubah melalui formulir ini.")
 			}
 		}
-		if err := validateUserRelations(tx, input, exceptID); err != nil {
+		var relationCurrent *User
+		if update {
+			relationCurrent = &current
+		}
+		if err := validateUserRelations(tx, input, relationCurrent); err != nil {
 			return err
 		}
 		if !update {
